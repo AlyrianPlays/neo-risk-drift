@@ -1,0 +1,23 @@
+# Virtual environment (rebuild with: pip install -r requirements.txt)
+.venv/
+venv/
+
+# Local data: grows with every run, so it stays out of the repo
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Logs
+*.log
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Editor and OS clutter
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store
