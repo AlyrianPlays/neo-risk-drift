@@ -92,6 +92,7 @@ For a manual run with visible output, use `.venv\Scripts\python.exe snapshot.py`
 | `sentry_removed` | Every removal seen, with the run where it was first observed |
 | `sentry_events` | What changed for each Sentry object since the previous run: `added`, `updated` (one row per changed field, with old and new value), `rescored` (only the Palermo values moved), `dropped`, `reappeared` |
 | `scout_events` | The same for Scout objects, comparing only rating, NEO/PHA scores, MOID and H (observation counts change on every re-observation and stay in `scout_snapshot`) |
+| `detected_runs` | Each Sentry/Scout run already compared, the run it was compared with, and how many events it produced (makes re-runs safe) |
 
 ## Roadmap
 
