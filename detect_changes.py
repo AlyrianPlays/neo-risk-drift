@@ -99,6 +99,28 @@ LEFT JOIN (SELECT s.des, s.run_id, r.fetched_at
        ON back.des = rm.des
       AND datetime(back.fetched_at) > datetime(rm.removed_at)
 GROUP BY rm.des, rm.removed_at;
+
+-- JPL's removed list, back to 2002, as the outcome record for modeling: each
+-- row says "ruled out at removed_at". A provisional designation encodes the
+-- half-month of discovery ("2026 TB8": T = Oct 1-15, letters A-Y skipping I),
+-- so even removals from long before our snapshots get an approximate start.
+-- days_to_removal counts from the start of that half-month, so it is an upper
+-- bound, up to ~15 days long. Numbered and comet designations get NULLs.
+CREATE VIEW IF NOT EXISTS sentry_removal_outcomes AS
+SELECT des, removed_at, discovered,
+       ROUND(julianday(removed_at) - julianday(discovered), 1) AS days_to_removal,
+       discovered < '2002' AS before_sentry,       -- discovered before Sentry existed
+       back_in_sentry_run IS NULL AS still_removed  -- 0 when JPL later listed it again
+FROM (
+    SELECT st.*,
+           CASE WHEN des GLOB '[12][0-9][0-9][0-9] [A-HJ-Y][A-HJ-Z]*' THEN
+               printf('%s-%02d-%02d', substr(des, 1, 4),
+                      (instr('ABCDEFGHJKLMNOPQRSTUVWXY', substr(des, 6, 1)) + 1) / 2,
+                      CASE instr('ABCDEFGHJKLMNOPQRSTUVWXY', substr(des, 6, 1)) % 2
+                           WHEN 1 THEN 1 ELSE 16 END)
+           END AS discovered
+    FROM sentry_removed_status st
+);
 """
 
 # Every column: under 1% of Sentry objects change per update (T-3.1), so one

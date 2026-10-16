@@ -133,6 +133,7 @@ Views (derived on the fly, no stored data):
 |---|---|
 | `sentry_drop_check` | Every Sentry `dropped` event with the removal that explains it (`removed_at` between the last run that had the object and the first that didn't). A NULL `removed_at` means the object vanished without JPL listing a removal. |
 | `sentry_removed_status` | Every removal with `back_in_sentry_run`: the first later run in which the object was in Sentry again. JPL sometimes takes a removal back (2026 TB8 was removed on 2026-10-13 and listed again the next day), so the removed list isn't strictly cumulative upstream. Rows are never deleted; this view says which removals still stand. |
+| `sentry_removal_outcomes` | The removed list (back to 2002) as outcome labels for modeling: each removal with the discovery half-month decoded from its provisional designation (`2026 TB8`: T = Oct 1-15), `days_to_removal` (an upper bound, counted from the start of that half-month), `before_sentry` for objects found before Sentry began in 2002, and `still_removed`. Across 3,548 removals since 2002, the median is about 19 days from discovery and 69% happen within 30 days. |
 
 ## Data notes
 
@@ -161,7 +162,7 @@ Things the first days of snapshots showed, and how the pipeline handles them:
 - [x] Daily snapshots with raw and parsed storage
 - [x] Change tracking: per-object events between consecutive runs, idempotent re-runs,
       drops cross-checked against the removed list
-- [ ] Backfill from the removed-objects history
+- [x] Removed-objects history (back to 2002) as outcome labels
 - [ ] Per-object Sentry details: observation arc, observation counts, orbit computation date
 - [ ] Analysis: how risk estimates evolve
 - [ ] Prediction: estimate whether an object will be removed from the risk list

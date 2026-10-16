@@ -161,6 +161,49 @@ class RemovalCheckTest(unittest.TestCase):
         ])
 
 
+class RemovalOutcomeTest(unittest.TestCase):
+    """The T-4.1 outcome view: discovery half-month from the designation."""
+
+    def outcomes(self, removed):
+        conn = sqlite3.connect(":memory:")
+        try:
+            conn.executescript(snapshot.SCHEMA)
+            detect_changes.detect_changes(conn, lambda message: None)
+            conn.executemany("INSERT INTO sentry_removed VALUES (?, ?, 1)", removed)
+            return conn.execute(
+                "SELECT des, discovered, days_to_removal, before_sentry, still_removed "
+                "FROM sentry_removal_outcomes ORDER BY des").fetchall()
+        finally:
+            conn.close()
+
+    def test_designation_gives_the_discovery_half_month(self):
+        rows = self.outcomes([
+            ("2026 TB8", "2026-10-13 17:29:15"),
+            ("2021 AB", "2021-02-01 00:00:00"),
+            ("2021 BA12", "2021-02-01 00:00:00"),
+            ("2026 YA", "2027-01-01 00:00:00"),
+            ("1994 UG", "2003-04-25 11:07:03"),
+            ("99942", "2021-02-21 08:22:28"),
+            ("P/2003 KV2", "2003-06-01 00:00:00"),
+        ])
+        self.assertEqual(rows, [
+            ("1994 UG", "1994-10-16", 3113.5, 1, 1),
+            ("2021 AB", "2021-01-01", 31.0, 0, 1),
+            ("2021 BA12", "2021-01-16", 16.0, 0, 1),
+            ("2026 TB8", "2026-10-01", 12.7, 0, 1),
+            ("2026 YA", "2026-12-16", 16.0, 0, 1),
+            ("99942", None, None, None, 1),
+            ("P/2003 KV2", None, None, None, 1),
+        ])
+
+    def test_every_half_month_letter(self):
+        letters = "ABCDEFGHJKLMNOPQRSTUVWXY"
+        rows = self.outcomes([("2020 %sA" % ch, "2021-06-01 00:00:00") for ch in letters])
+        expected = {"2020 %sA" % ch: "2020-%02d-%02d" % (i // 2 + 1, 1 if i % 2 == 0 else 16)
+                    for i, ch in enumerate(letters)}
+        self.assertEqual({des: discovered for des, discovered, _, _, _ in rows}, expected)
+
+
 class DetectChangesTest(unittest.TestCase):
 
     def setUp(self):
