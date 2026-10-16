@@ -63,15 +63,20 @@ CREATE TABLE IF NOT EXISTS detected_runs (
     detected_at  TEXT NOT NULL        -- UTC, ISO 8601
 );
 
--- Views hold no data, so unlike tables they can be dropped and re-created
--- freely when their definition changes. Timestamps go through datetime()
+-- Views hold no data, so unlike tables they are dropped and re-created on
+-- every run, which keeps their definitions in step with this file (IF NOT
+-- EXISTS would freeze the first version). Timestamps go through datetime()
 -- because fetched_at is "2026-10-16T14:44:55+00:00" while JPL's removed_at
 -- is "2026-10-16 14:14:42", and comparing those as strings is wrong.
+
+DROP VIEW IF EXISTS sentry_removal_outcomes;
+DROP VIEW IF EXISTS sentry_removed_status;
+DROP VIEW IF EXISTS sentry_drop_check;
 
 -- Every Sentry drop with the removal that explains it: a removal row for the
 -- same des timed between the last run that had the object and the run that
 -- didn't. removed_at is NULL when JPL hasn't listed a removal (yet).
-CREATE VIEW IF NOT EXISTS sentry_drop_check AS
+CREATE VIEW sentry_drop_check AS
 SELECT e.run_id, e.des,
        prev.fetched_at AS last_seen_at,
        curr.fetched_at AS missing_at,
@@ -90,7 +95,7 @@ WHERE e.event_type = 'dropped';
 -- back (2026 TB8 was removed on 10-13 and back in Sentry on 10-14). Rather
 -- than flag or delete such rows, this view gives the first run after each
 -- removal in which the object was in Sentry again; NULL means still removed.
-CREATE VIEW IF NOT EXISTS sentry_removed_status AS
+CREATE VIEW sentry_removed_status AS
 SELECT rm.des, rm.removed_at, rm.first_seen_run,
        MIN(back.run_id) AS back_in_sentry_run
 FROM sentry_removed rm
@@ -106,11 +111,18 @@ GROUP BY rm.des, rm.removed_at;
 -- so even removals from long before our snapshots get an approximate start.
 -- days_to_removal counts from the start of that half-month, so it is an upper
 -- bound, up to ~15 days long. Numbered and comet designations get NULLs.
-CREATE VIEW IF NOT EXISTS sentry_removal_outcomes AS
+-- reprocessed_2021 marks removal dates JPL rewrote while recomputing the
+-- whole catalog for the DE441 ephemeris (April 2021) and Sentry-II
+-- (July-August 2021): hundreds of long-listed objects were dropped without
+-- new observations, and those removed_at values aren't public removal
+-- times (T-4.2). Leave them out of rate and timing analyses or model them
+-- separately.
+CREATE VIEW sentry_removal_outcomes AS
 SELECT des, removed_at, discovered,
        ROUND(julianday(removed_at) - julianday(discovered), 1) AS days_to_removal,
        discovered < '2002' AS before_sentry,       -- discovered before Sentry existed
-       back_in_sentry_run IS NULL AS still_removed  -- 0 when JPL later listed it again
+       back_in_sentry_run IS NULL AS still_removed, -- 0 when JPL later listed it again
+       removed_at BETWEEN '2020-10-15' AND '2021-09' AS reprocessed_2021
 FROM (
     SELECT st.*,
            CASE WHEN des GLOB '[12][0-9][0-9][0-9] [A-HJ-Y][A-HJ-Z]*' THEN

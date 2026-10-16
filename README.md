@@ -133,7 +133,7 @@ Views (derived on the fly, no stored data):
 |---|---|
 | `sentry_drop_check` | Every Sentry `dropped` event with the removal that explains it (`removed_at` between the last run that had the object and the first that didn't). A NULL `removed_at` means the object vanished without JPL listing a removal. |
 | `sentry_removed_status` | Every removal with `back_in_sentry_run`: the first later run in which the object was in Sentry again. JPL sometimes takes a removal back (2026 TB8 was removed on 2026-10-13 and listed again the next day), so the removed list isn't strictly cumulative upstream. Rows are never deleted; this view says which removals still stand. |
-| `sentry_removal_outcomes` | The removed list (back to 2002) as outcome labels for modeling: each removal with the discovery half-month decoded from its provisional designation (`2026 TB8`: T = Oct 1-15), `days_to_removal` (an upper bound, counted from the start of that half-month), `before_sentry` for objects found before Sentry began in 2002, and `still_removed`. Across 3,548 removals since 2002, the median is about 19 days from discovery and 69% happen within 30 days. |
+| `sentry_removal_outcomes` | The removed list (back to 2002) as outcome labels for modeling: each removal with the discovery half-month decoded from its provisional designation (`2026 TB8`: T = Oct 1-15), `days_to_removal` (an upper bound, counted from the start of that half-month), `before_sentry` for objects found before Sentry began in 2002, `still_removed`, and `reprocessed_2021` (see Data notes). Across 3,548 removals since 2002, the median is about 19 days from discovery and 69% happen within 30 days. |
 
 ## Data notes
 
@@ -154,6 +154,19 @@ Things the first days of snapshots showed, and how the pipeline handles them:
 - **Timestamps differ by field.** `fetched_at` is ISO 8601 UTC (`2026-10-16T14:44:55+00:00`),
   JPL's `removed_at` is UTC as `2026-10-16 14:14:42`, and `last_obs` can carry a fractional
   day (`2020-10-3.80160`). Compare times through SQLite's `datetime()`, not as strings.
+- **2021 is not a normal year for removals.** JPL removed 453 objects in 2021, against
+  100-190 in other years, because it recomputed its whole catalog twice: for the DE441
+  planetary ephemeris in April 2021, and for the new Sentry-II impact-monitoring
+  algorithm in July-August 2021 ("all objects in the NEA catalog have been reprocessed
+  ... The objects for which the new algorithm cannot find virtual impactors have been
+  moved to the Removed Objects table", [Sentry operational notes](https://cneos.jpl.nasa.gov/sentry/notes.html),
+  2021-Apr-13 and 2021-Aug-23). In a sample of 40 removals from the busiest days, 37
+  had no observations for over a year before removal, so their removal came from
+  the new model, not new data. JPL also rewrote removal dates for about 2020-10-15 to
+  2021-08-31 (Apophis now shows 2021-02-21; JPL announced its removal on 2021-03-26), so
+  those dates aren't when objects left the public list. `sentry_removal_outcomes.reprocessed_2021`
+  flags that window: leave it out of removal-rate and timing analyses, or model it
+  separately.
 - **Scout raw records always differ between pulls**, because sky position and
   ephemeris time are computed at fetch time. Changes are detected on parsed fields only.
 

@@ -196,6 +196,25 @@ class RemovalOutcomeTest(unittest.TestCase):
             ("P/2003 KV2", None, None, None, 1),
         ])
 
+    def test_2021_reprocessing_window_is_flagged(self):
+        conn = sqlite3.connect(":memory:")
+        try:
+            conn.executescript(snapshot.SCHEMA)
+            # An outdated definition, as the real database would hold after a code change
+            conn.execute("CREATE VIEW sentry_removal_outcomes AS SELECT 1 AS old")
+            detect_changes.detect_changes(conn, lambda message: None)
+            conn.executemany("INSERT INTO sentry_removed VALUES (?, ?, 1)", [
+                ("2020 TA", "2020-10-14 23:59:59"),
+                ("2020 TB", "2020-10-15 00:00:00"),
+                ("2010 MZ112", "2021-07-29 23:17:27"),
+                ("2021 QA", "2021-08-31 23:59:59"),
+                ("2021 RA", "2021-09-01 00:00:00"),
+            ])
+            rows = conn.execute("SELECT des, reprocessed_2021 FROM sentry_removal_outcomes ORDER BY removed_at").fetchall()
+        finally:
+            conn.close()
+        self.assertEqual(rows, [("2020 TA", 0), ("2020 TB", 1), ("2010 MZ112", 1), ("2021 QA", 1), ("2021 RA", 0)])
+
     def test_every_half_month_letter(self):
         letters = "ABCDEFGHJKLMNOPQRSTUVWXY"
         rows = self.outcomes([("2020 %sA" % ch, "2021-06-01 00:00:00") for ch in letters])
