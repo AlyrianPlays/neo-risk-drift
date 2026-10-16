@@ -39,6 +39,8 @@ JPL API ──► snapshot.py ──► runs            (raw JSON, exactly as re
                         └─► sentry_events    (what changed since the previous run)
                             scout_events
                             detected_runs    (which runs have been compared)
+                              │
+JPL API ──► snapshot.py ──► sentry_details   (per-object details for new or refit objects)
 ```
 
 - **Two storage layers.** Raw responses are kept alongside parsed rows. Past API
@@ -50,6 +52,13 @@ JPL API ──► snapshot.py ──► runs            (raw JSON, exactly as re
   nonzero so the scheduler records the failure. Change detection runs only after every
   feed has been saved, so a problem there is logged as `FAILED` but can never lose a
   snapshot.
+- **Per-object details, politely.** The Sentry summary lacks the observation arc and
+  counts, which are likely strong predictors of removal. They come from one request per
+  object (`sentry.api?des=...`), so each run fetches them only for objects that are new,
+  were refit, or have no details yet, at most 200 per run, one request per second,
+  newest observations first. The step stops after 3 failures in a row or 10 minutes,
+  and continues next run. The first backfill of about 2,200 objects takes roughly a dozen
+  daily runs and adds about 5 minutes to each.
 - **Change data capture.** Each Sentry and Scout run is compared with the previous run
   of the same source (not "yesterday": manual runs can add several a day). Every run is
   compared exactly once, so re-running is always safe. A run that stored fewer rows than
@@ -83,6 +92,7 @@ Options:
 python snapshot.py --db other.db       # use a different database file
 python snapshot.py --log snapshot.log  # also append output to a log file
 python snapshot.py --from-dir DIR      # load saved JSON files instead of calling JPL
+python snapshot.py --details-limit 50  # fetch details for at most 50 objects (0 skips them)
 ```
 
 Change detection can also be run on its own:
@@ -119,10 +129,11 @@ For a manual run with visible output, use `.venv\Scripts\python.exe snapshot.py`
 
 | Table | Contents |
 |---|---|
-| `runs` | One row per feed per pull: source, timestamp, API version, record count, raw JSON |
+| `runs` | One row per feed per pull: source, timestamp, API version, record count, raw JSON. Also one row per stored Sentry details response (source `sentry_details`, no record count, timestamp of the pull it belongs to), so filter on `source` when looking for pulls |
 | `sentry_snapshot` | Impact probability, Palermo and Torino ratings, size, velocity per object per run |
 | `scout_snapshot` | Observation count, arc length, NEO/PHA likelihood scores per object per run |
 | `sentry_removed` | Every removal seen, with the run where it was first observed |
+| `sentry_details` | Per-object Sentry details, fetched when an object is new, refit, or not fetched yet: analysis method, impact-analysis date (`cdate`, US Pacific time; it also changes when JPL reprocesses its whole catalog, so it isn't a refit date), observation arc in days, optical/radar/satellite observation counts, mass, impact energy and velocity. When JPL has no details (object removed or not found), its answer is stored in `error` so the object isn't asked for again until it changes. Each response is also kept verbatim in `runs` |
 | `sentry_events` | What changed for each Sentry object since the previous run: `added`, `updated` (one row per changed field, with old and new value), `rescored` (only the Palermo values moved), `dropped`, `reappeared` (with field rows against how the object looked when last seen), `renamed` (the object was numbered, so its designation changed) |
 | `scout_events` | The same for Scout objects, comparing only rating, NEO/PHA scores, MOID and H (observation counts change on every re-observation and stay in `scout_snapshot`) |
 | `detected_runs` | Each Sentry/Scout run already compared, the run it was compared with, its status (`baseline`, `compared`, or `skipped` when rows were missing) and how many events it produced (makes re-runs safe) |
@@ -176,7 +187,7 @@ Things the first days of snapshots showed, and how the pipeline handles them:
 - [x] Change tracking: per-object events between consecutive runs, idempotent re-runs,
       drops cross-checked against the removed list
 - [x] Removed-objects history (back to 2002) as outcome labels
-- [ ] Per-object Sentry details: observation arc, observation counts, orbit computation date
+- [x] Per-object Sentry details: observation arc, observation counts, impact-analysis date
 - [ ] Analysis: how risk estimates evolve
 - [ ] Prediction: estimate whether an object will be removed from the risk list
 

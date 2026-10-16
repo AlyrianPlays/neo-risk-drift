@@ -11,7 +11,9 @@ The fixtures are trimmed copies of real responses. day1 is 2026-10-15 and day2
 is 2026-10-16 (runs 28-33). Between them Sentry adds 2026 TC94 and drops
 2026 TL77 and 2026 TS (both show up in the removed list), 2026 RH79 gets a new
 orbit fit, 2010 UE only has its Palermo values re-scored, and the Scout list
-loses one object and gains another.
+loses one object and gains another. day2/sentry_details holds real per-object
+responses for the four day2 Sentry objects (Bennu's 157 virtual impactors are
+cut to 3).
 """
 import json
 import os
@@ -105,9 +107,10 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual(seen, [(first_day2_run,)])
 
     def test_removed_logs_only_new_rows(self):
+        day2 = os.path.join(FIXTURES, "day2")
         self.run_day("day1")
-        self.assertIn("sentry_removed: run 5, 2 rows stored", self.run_day("day2").stdout)
-        self.assertIn("sentry_removed: run 8, 0 rows stored", self.run_day("day2").stdout)
+        self.assertIn("sentry_removed: run 5, 2 rows stored", self.run_snapshot(day2, "--details-limit", "0").stdout)
+        self.assertIn("sentry_removed: run 8, 0 rows stored", self.run_snapshot(day2, "--details-limit", "0").stdout)
 
     def test_one_bad_feed_does_not_sink_the_others(self):
         result = self.run_snapshot(self.broken_copy("day1", "scout_summary", "{not json"))
@@ -155,6 +158,135 @@ class SnapshotTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("change detection: FAILED", result.stdout)
         self.assertEqual(sorted(r[0] for r in self.query("SELECT source FROM runs")), sorted(SOURCES))
+
+    def day2_copy(self):
+        copy = os.path.join(self.tmp, "day2")
+        shutil.copytree(os.path.join(FIXTURES, "day2"), copy)
+        return copy
+
+    def details_rows(self):
+        return self.query("SELECT des FROM sentry_details ORDER BY run_id")
+
+    def test_details_fetched_once_for_new_objects(self):
+        self.run_day("day1")
+        result = self.run_day("day2")
+        self.assertIn("sentry_details: 4 stored", result.stdout)
+        # Newest observations first, so the backfill starts with active objects
+        self.assertEqual(self.details_rows()[0], ("2026 TC94",))
+        bennu = self.query("SELECT method, arc_days, n_del, first_obs FROM sentry_details WHERE des = '101955'")
+        self.assertEqual(bennu, [("MC", 7693.3, 58, "1999-09-11.40624")])
+        self.run_day("day2")
+        self.assertEqual(len(self.details_rows()), 4, "nothing changed, so nothing refetched")
+
+    def test_refit_triggers_new_details(self):
+        day2 = self.day2_copy()
+        self.run_snapshot(day2)
+        path = os.path.join(day2, "sentry_summary.json")
+        with open(path, encoding="ascii") as f:
+            payload = json.load(f)
+        for row in payload["data"]:
+            if row["des"] == "2026 RH79":
+                row["ip"] = "6e-07"
+        with open(path, "w", encoding="ascii") as f:
+            json.dump(payload, f)
+        result = self.run_snapshot(day2)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("sentry_details: 1 stored", result.stdout)
+        self.assertEqual(self.details_rows()[-1], ("2026 RH79",))
+
+    def test_details_limit(self):
+        result = self.run_snapshot(os.path.join(FIXTURES, "day2"), "--details-limit", "2")
+        self.assertIn("sentry_details: 2 stored, 0 without details, 0 failed, 2 still to fetch", result.stdout)
+        result = self.run_snapshot(os.path.join(FIXTURES, "day2"), "--details-limit", "0")
+        self.assertNotIn("sentry_details", result.stdout)
+        self.assertEqual(len(self.details_rows()), 2)
+
+    def write_details(self, day2, des, payload):
+        with open(os.path.join(day2, "sentry_details", des + ".json"), "w", encoding="ascii") as f:
+            json.dump(payload, f)
+
+    def test_no_details_answer_is_stored_and_not_asked_again(self):
+        day2 = self.day2_copy()
+        self.write_details(day2, "2026 TC94", {"error": "specified object removed", "removed": "2026-10-16 15:00:00"})
+        self.write_details(day2, "2010 UE", {"error": "specified object not found"})
+        result = self.run_snapshot(day2)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("sentry_details: 2 stored, 2 without details, 0 failed, 0 still to fetch", result.stdout)
+        self.assertIn("sentry_details: 2010 UE: specified object not found", result.stdout)
+        errors = self.query("SELECT des, error FROM sentry_details WHERE error IS NOT NULL ORDER BY des")
+        self.assertEqual(errors, [("2010 UE", "specified object not found"), ("2026 TC94", "specified object removed")])
+        result = self.run_snapshot(day2)
+        self.assertIn("sentry_details: 0 stored, 0 without details, 0 failed, 0 still to fetch", result.stdout)
+
+    def test_other_jpl_error_is_a_failure_and_retried(self):
+        day2 = self.day2_copy()
+        self.write_details(day2, "2026 TC94", {"error": "service temporarily unavailable"})
+        result = self.run_snapshot(day2)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("2026 TC94 FAILED - service temporarily unavailable", result.stdout)
+        self.assertIn("1 failed, 1 still to fetch", result.stdout)
+
+    def test_skipped_sentry_run_does_not_stall_the_details(self):
+        self.run_snapshot(os.path.join(FIXTURES, "day1"))
+        day2 = self.day2_copy()
+        path = os.path.join(day2, "sentry_summary.json")
+        with open(path, "w", encoding="ascii") as f:
+            json.dump({"count": "0", "data": []}, f)
+        # Day 1's five objects are still the current list. Three have saved
+        # responses in day2; 2026 TL77 and 2026 TS don't, so they fail
+        result = self.run_snapshot(day2)
+        self.assertIn("WARNING run 4 skipped", result.stdout)
+        self.assertIn("sentry_details: 3 stored, 0 without details, 2 failed, 2 still to fetch", result.stdout)
+
+    def test_object_fetched_by_another_run_meanwhile_is_skipped(self):
+        day2 = os.path.join(FIXTURES, "day2")
+        self.run_snapshot(day2, "--details-limit", "0")
+        sys.path.insert(0, os.path.dirname(SNAPSHOT))
+        import snapshot
+        conn = sqlite3.connect(self.db)
+        lines = []
+        saved = snapshot.details_wanted
+        try:
+            # As if a parallel run stored 2026 TC94 after this one picked its list
+            conn.execute("INSERT INTO sentry_details (run_id, des) VALUES (999, '2026 TC94')")
+            conn.commit()
+            snapshot.details_wanted = lambda c: ["2026 TC94", "2026 RH79"]
+            snapshot.fetch_sentry_details(conn, day2, 10, "2026-10-16T00:00:00+00:00", lines.append)
+        finally:
+            snapshot.details_wanted = saved
+            conn.close()
+        self.assertIn("sentry_details: 1 stored, 0 without details, 0 failed, 0 still to fetch", lines)
+        self.assertEqual(self.details_rows(), [("2026 RH79",), ("2026 TC94",)])
+
+    def test_details_stop_when_out_of_time(self):
+        day2 = os.path.join(FIXTURES, "day2")
+        self.run_snapshot(day2, "--details-limit", "0")
+        sys.path.insert(0, os.path.dirname(SNAPSHOT))
+        import snapshot
+        saved = snapshot.DETAILS_MAX_SECONDS
+        snapshot.DETAILS_MAX_SECONDS = -1  # already over budget before the first request
+        conn = sqlite3.connect(self.db)
+        lines = []
+        try:
+            snapshot.fetch_sentry_details(conn, day2, 10, "2026-10-16T00:00:00+00:00", lines.append)
+        finally:
+            snapshot.DETAILS_MAX_SECONDS = saved
+            conn.close()
+        self.assertIn("sentry_details: out of time, will continue next run", lines)
+        self.assertEqual(self.details_rows(), [])
+
+    def test_details_stop_after_repeated_failures(self):
+        day2 = self.day2_copy()
+        details = os.path.join(day2, "sentry_details")
+        for name in os.listdir(details):
+            with open(os.path.join(details, name), "w", encoding="ascii") as f:
+                f.write("{not json")
+        result = self.run_snapshot(day2)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("stopping after repeated failures", result.stdout)
+        self.assertEqual(result.stdout.count("FAILED"), 3)
+        # The feeds themselves still landed
+        self.assertEqual(self.query("SELECT COUNT(*) FROM sentry_snapshot")[0][0], 4)
 
 
 if __name__ == "__main__":

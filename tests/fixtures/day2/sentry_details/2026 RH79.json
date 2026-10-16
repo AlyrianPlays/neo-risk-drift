@@ -1,0 +1,49 @@
+{
+ "data": [
+  {
+   "date": "2125-03-16.39",
+   "energy": "9.963e+01",
+   "ip": "4.272e-07",
+   "ps": "-5.24",
+   "sigma_vi": "1.3998",
+   "ts": "0"
+  },
+  {
+   "date": "2125-03-16.39",
+   "energy": "9.963e+01",
+   "ip": "1.520e-07",
+   "ps": "-5.69",
+   "sigma_vi": "1.5024",
+   "ts": "0"
+  }
+ ],
+ "signature": {
+  "source": "NASA/JPL Sentry Data API",
+  "version": "2.0"
+ },
+ "summary": {
+  "cdate": "2026-10-16 07:18:38",
+  "darc": "32.543 days",
+  "des": "2026 RH79",
+  "diameter": "0.12",
+  "energy": "9.963e+01",
+  "first_obs": "2026-09-13",
+  "fullname": "(2026 RH79)",
+  "h": "22.32",
+  "ip": "5.792e-07",
+  "last_obs": "2026-10-15",
+  "mass": "2.12e+09",
+  "method": "IOBS",
+  "n_imp": 2,
+  "ndel": 0,
+  "ndop": 0,
+  "nobs": 109,
+  "nsat": "0",
+  "pdate": "2026-10-16 15:09:57",
+  "ps_cum": "-5.11",
+  "ps_max": "-5.24",
+  "ts_max": "0",
+  "v_imp": "19.89",
+  "v_inf": "16.47"
+ }
+}

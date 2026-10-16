@@ -1,0 +1,49 @@
+{
+ "data": [
+  {
+   "date": "2044-10-13.25",
+   "energy": "4.177e-03",
+   "ip": "9.610e-08",
+   "ps": "-8.65",
+   "sigma_vi": "2.6139",
+   "ts": "0"
+  },
+  {
+   "date": "2032-10-14.45",
+   "energy": "4.237e-03",
+   "ip": "1.408e-07",
+   "ps": "-8.01",
+   "sigma_vi": "2.4207",
+   "ts": "0"
+  }
+ ],
+ "signature": {
+  "source": "NASA/JPL Sentry Data API",
+  "version": "2.0"
+ },
+ "summary": {
+  "cdate": "2022-09-15 03:14:28",
+  "darc": "0.0927 days",
+  "des": "2010 UE",
+  "diameter": "0.0041",
+  "energy": "4.213e-03",
+  "first_obs": "2010-10-17",
+  "fullname": "(2010 UE)",
+  "h": "29.59",
+  "ip": "2.369e-07",
+  "last_obs": "2010-10-17",
+  "mass": "9.22e+04",
+  "method": "IOBS",
+  "n_imp": 2,
+  "ndel": 0,
+  "ndop": 0,
+  "nobs": 16,
+  "nsat": "0",
+  "pdate": "2026-10-16 15:09:57",
+  "ps_cum": "-7.92",
+  "ps_max": "-8.01",
+  "ts_max": "0",
+  "v_imp": "19.59",
+  "v_inf": "16.11"
+ }
+}

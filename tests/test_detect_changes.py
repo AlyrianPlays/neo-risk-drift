@@ -238,8 +238,11 @@ class DetectChangesTest(unittest.TestCase):
         return result.stdout
 
     def snapshot(self, day, expect=0):
+        # Per-object details are tested in test_snapshot.py; leaving them out
+        # here keeps the run numbers below predictable
         from_dir = day if os.path.isabs(day) else os.path.join(FIXTURES, day)
-        return self.run_script("snapshot.py", "--db", self.db, "--from-dir", from_dir, expect=expect)
+        return self.run_script("snapshot.py", "--db", self.db, "--from-dir", from_dir,
+                               "--details-limit", "0", expect=expect)
 
     def detect(self, *extra):
         return self.run_script("detect_changes.py", "--db", self.db, *extra)
