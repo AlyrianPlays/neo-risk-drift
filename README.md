@@ -134,13 +134,41 @@ Views (derived on the fly, no stored data):
 | `sentry_drop_check` | Every Sentry `dropped` event with the removal that explains it (`removed_at` between the last run that had the object and the first that didn't). A NULL `removed_at` means the object vanished without JPL listing a removal. |
 | `sentry_removed_status` | Every removal with `back_in_sentry_run`: the first later run in which the object was in Sentry again. JPL sometimes takes a removal back (2026 TB8 was removed on 2026-10-13 and listed again the next day), so the removed list isn't strictly cumulative upstream. Rows are never deleted; this view says which removals still stand. |
 
+## Data notes
+
+Things the first days of snapshots showed, and how the pipeline handles them:
+
+- **Churn is small for Sentry, large for Scout.** Under 1% of Sentry objects change per
+  update, and some days JPL publishes no change at all. Scout turns over 10-20% of its
+  list per day, and 16-44% of the objects that stay change something.
+- **Most Sentry "changes" are calendar effects.** Of the 20 Sentry objects that changed on
+  2026-10-16, 17 changed only their Palermo values, all upward by 0.01-0.06, with impact
+  probability and observations untouched. JPL's object details show their orbit
+  computation is years old. Palermo depends on time to impact, and JPL appears to count
+  it in whole years rounded up, so a value steps up when an impact date passes its
+  anniversary. These are logged as `rescored`, not `updated`.
+- **The removed list isn't strictly cumulative.** JPL can take a removal back: 2026 TB8
+  was removed, listed again a day later, then removed again. `sentry_removed` keeps
+  every removal ever seen, and `sentry_removed_status` says which ones still stand.
+- **Timestamps differ by field.** `fetched_at` is ISO 8601 UTC (`2026-10-16T14:44:55+00:00`),
+  JPL's `removed_at` is UTC as `2026-10-16 14:14:42`, and `last_obs` can carry a fractional
+  day (`2020-10-3.80160`). Compare times through SQLite's `datetime()`, not as strings.
+- **Scout raw records always differ between pulls**, because sky position and
+  ephemeris time are computed at fetch time. Changes are detected on parsed fields only.
+
 ## Roadmap
 
 - [x] Daily snapshots with raw and parsed storage
-- [ ] Change tracking: detect what moved between runs
+- [x] Change tracking: per-object events between consecutive runs, idempotent re-runs,
+      drops cross-checked against the removed list
 - [ ] Backfill from the removed-objects history
+- [ ] Per-object Sentry details: observation arc, observation counts, orbit computation date
 - [ ] Analysis: how risk estimates evolve
 - [ ] Prediction: estimate whether an object will be removed from the risk list
+
+## License
+
+MIT, see [LICENSE](LICENSE). The data itself comes from NASA/JPL (see below).
 
 ## Data credit
 
