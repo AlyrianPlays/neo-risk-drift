@@ -7,23 +7,28 @@ source, and what moved is recorded in sentry_events and scout_events:
   - updated     JPL refit the object; one row per changed field, old and new value
   - rescored    Sentry only: just ps_cum/ps_max moved, a calendar effect (see RESCORE_FIELDS)
   - dropped     the object is missing from this run
-  - reappeared  the object is back after being dropped
+  - reappeared  the object is back after being dropped; its field rows compare
+                with how it looked when last seen, since a refit usually brings it back
+  - renamed     Sentry only: the object got numbered, so its des changed
 
-"Previous" means the previous run of the same source, not yesterday's, because
-manual runs can add several in one day. The first run of each source is the
-baseline and produces no events.
+"Previous" means the previous usable run of the same source, not yesterday's,
+because manual runs can add several in one day. The first run of each source is
+the baseline and produces no events. A run whose snapshot table holds fewer rows
+than the feed reported (an empty or cut-off response) is skipped with a warning
+instead of turning every missing object into a "dropped" event.
 
-Every run is compared once. detected_runs gets a row per compared run, written
-in the same transaction as that run's events, so re-running is always safe and
-never duplicates anything.
+Every run is compared once. detected_runs gets a row per run, written in the
+same transaction as that run's events, so re-running never duplicates anything.
 
-Events are derived data. They can be rebuilt from the snapshot tables at any
-time, and those can be rebuilt from runs.raw_json.
+Events are derived data: --rebuild clears them and recomputes everything from
+the snapshot tables, which in turn can be rebuilt from runs.raw_json.
 
 Usage:
   python detect_changes.py                  # compare new runs in neo_risk.db
   python detect_changes.py --db test.db     # use a different database file
+  python detect_changes.py --rebuild        # recompute every event (back up the database first)
   pythonw detect_changes.py --log snapshot.log
+snapshot.py runs this automatically after storing the feeds.
 """
 
 import argparse
@@ -35,8 +40,8 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS sentry_events (
     run_id      INTEGER NOT NULL REFERENCES runs(run_id),  -- run where the change was seen
     des         TEXT NOT NULL,
-    event_type  TEXT NOT NULL,        -- added, updated, rescored, dropped, reappeared
-    field       TEXT,                 -- sentry_snapshot column that changed (updated/rescored only)
+    event_type  TEXT NOT NULL,        -- added, updated, rescored, dropped, reappeared, renamed
+    field       TEXT,                 -- sentry_snapshot column that changed; "des" for renamed
     old_value,                        -- no declared type, so values keep their REAL/INTEGER/TEXT
     new_value                         -- type and a null<->value flip stays visible
 );
@@ -45,14 +50,15 @@ CREATE TABLE IF NOT EXISTS scout_events (
     run_id       INTEGER NOT NULL REFERENCES runs(run_id),
     object_name  TEXT NOT NULL,       -- temporary designation
     event_type   TEXT NOT NULL,       -- added, updated, dropped, reappeared
-    field        TEXT,                -- scout_snapshot column that changed (updated only)
+    field        TEXT,                -- scout_snapshot column that changed
     old_value,
     new_value
 );
 
 CREATE TABLE IF NOT EXISTS detected_runs (
-    run_id       INTEGER PRIMARY KEY REFERENCES runs(run_id),  -- Sentry or Scout run compared
-    prev_run_id  INTEGER REFERENCES runs(run_id),  -- what it was compared with; NULL = baseline
+    run_id       INTEGER PRIMARY KEY REFERENCES runs(run_id),  -- Sentry or Scout run
+    prev_run_id  INTEGER REFERENCES runs(run_id),  -- what it was compared with
+    status       TEXT NOT NULL,       -- baseline, compared, or skipped (rows missing, see docstring)
     event_count  INTEGER NOT NULL,
     detected_at  TEXT NOT NULL        -- UTC, ISO 8601
 );
@@ -81,7 +87,7 @@ DETECTORS = {
 }
 
 # Order used when summarizing a run in the log
-EVENT_TYPES = ("added", "reappeared", "updated", "rescored", "dropped")
+EVENT_TYPES = ("added", "reappeared", "renamed", "updated", "rescored", "dropped")
 
 
 def snapshot_rows(conn, table, key, fields, run_id):
@@ -91,26 +97,73 @@ def snapshot_rows(conn, table, key, fields, run_id):
     return {row[0]: row[1:] for row in cur}
 
 
-def keys_seen_before(conn, table, key, run_id):
-    cur = conn.execute(f"SELECT DISTINCT {key} FROM {table} WHERE run_id < ?", (run_id,))
-    return {row[0] for row in cur}
+def last_seen_rows(conn, table, key, fields, keys, run_id):
+    """{key: values} from the latest usable run before run_id that had the key, for keys seen before."""
+    columns = ", ".join(fields)
+    rows = {}
+    for k in keys:
+        row = conn.execute(
+            f"SELECT {columns} FROM {table} WHERE {key} = ? AND run_id < ? "
+            "AND run_id NOT IN (SELECT run_id FROM detected_runs WHERE status = 'skipped') "
+            "ORDER BY run_id DESC LIMIT 1",
+            (k, run_id),
+        ).fetchone()
+        if row:
+            rows[k] = tuple(row)
+    return rows
 
 
-def diff_runs(prev, curr, seen_before, fields):
-    """Compare two runs' rows and return (key, event_type, field, old, new) tuples."""
+def field_changes(key, old_row, new_row, fields):
+    """(key, event_type, field, old, new) per changed field: rescored if only Palermo moved."""
+    # None == None, so a field that stays null is not a change, but a
+    # null<->value flip is
+    changed = [(f, old, new) for f, old, new in zip(fields, old_row, new_row) if old != new]
+    if not changed:
+        return []
+    event_type = "rescored" if {f for f, _, _ in changed} <= RESCORE_FIELDS else "updated"
+    return [(key, event_type, f, old, new) for f, old, new in changed]
+
+
+def renames(prev, curr, fields):
+    """{new key: old key} for Sentry objects that got numbered between the runs.
+
+    "2026 RH79" would come back as "700001" with fullname "700001 (2026 RH79)",
+    so a new des whose fullname holds a vanished des in parentheses is the same
+    object, not a drop plus an add.
+    """
+    if "fullname" not in fields:
+        return {}
+    i = fields.index("fullname")
+    gone = prev.keys() - curr.keys()
+    found = {}
+    for new in curr.keys() - prev.keys():
+        for old in gone:
+            if f"({old})" in (curr[new][i] or ""):
+                found[new] = old
+    return found
+
+
+def diff_runs(prev, curr, last_seen, fields):
+    """Compare two runs' rows and return (key, event_type, field, old, new) tuples.
+
+    last_seen holds the latest earlier row of keys that are missing from prev
+    but were in some run before it.
+    """
     events = []
-    for key in sorted(curr.keys() - prev.keys()):
-        event_type = "reappeared" if key in seen_before else "added"
-        events.append((key, event_type, None, None, None))
-    for key in sorted(prev.keys() - curr.keys()):
+    renamed = renames(prev, curr, fields)
+    for new, old in sorted(renamed.items()):
+        events.append((new, "renamed", "des", old, new))
+        events.extend(field_changes(new, prev[old], curr[new], fields))
+    for key in sorted(curr.keys() - prev.keys() - renamed.keys()):
+        if key in last_seen:
+            events.append((key, "reappeared", None, None, None))
+            events.extend(field_changes(key, last_seen[key], curr[key], fields))
+        else:
+            events.append((key, "added", None, None, None))
+    for key in sorted(prev.keys() - curr.keys() - set(renamed.values())):
         events.append((key, "dropped", None, None, None))
     for key in sorted(prev.keys() & curr.keys()):
-        # None == None, so a field that stays null is not a change, but a
-        # null<->value flip is
-        changed = [(f, old, new) for f, old, new in zip(fields, prev[key], curr[key]) if old != new]
-        if changed:
-            event_type = "rescored" if {f for f, _, _ in changed} <= RESCORE_FIELDS else "updated"
-            events.extend((key, event_type, f, old, new) for f, old, new in changed)
+        events.extend(field_changes(key, prev[key], curr[key], fields))
     return events
 
 
@@ -124,40 +177,56 @@ def pending_runs(conn, source):
     return [row[0] for row in cur]
 
 
+def row_counts(conn, table, run_id):
+    """(rows in the snapshot table, records the feed said it sent) for one run."""
+    stored = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE run_id = ?", (run_id,)).fetchone()[0]
+    reported = conn.execute("SELECT record_count FROM runs WHERE run_id = ?", (run_id,)).fetchone()[0]
+    return stored, reported
+
+
 def previous_run(conn, source, run_id):
-    # A failed feed rolls back its runs row, so every run listed is a
-    # successful pull and the latest earlier one is the right baseline.
+    # D7: the previous usable run of the same source. Runs are compared in
+    # order, so every earlier run already has its detected_runs row.
     row = conn.execute(
-        "SELECT MAX(run_id) FROM runs WHERE source = ? AND run_id < ?", (source, run_id)
+        "SELECT MAX(r.run_id) FROM runs r JOIN detected_runs d ON d.run_id = r.run_id "
+        "WHERE r.source = ? AND r.run_id < ? AND d.status != 'skipped'",
+        (source, run_id),
     ).fetchone()
     return row[0]
 
 
 def detect_run(conn, source, run_id):
-    """Compare one run with its predecessor and store the events. Returns (prev_run_id, events)."""
+    """Compare one run with its predecessor and store the events. Returns (status, prev_run_id, events)."""
     table, key, events_table, fields = DETECTORS[source]
-    prev_id = previous_run(conn, source, run_id)
-    events = []
-    if prev_id is not None:
-        events = diff_runs(
-            snapshot_rows(conn, table, key, fields, prev_id),
-            snapshot_rows(conn, table, key, fields, run_id),
-            keys_seen_before(conn, table, key, run_id),
-            fields,
-        )
+    prev_id, events = None, []
+    stored, reported = row_counts(conn, table, run_id)
+    if stored == 0 or stored != reported:
+        status = "skipped"
+    else:
+        prev_id = previous_run(conn, source, run_id)
+        status = "baseline" if prev_id is None else "compared"
+    if status == "compared":
+        prev = snapshot_rows(conn, table, key, fields, prev_id)
+        curr = snapshot_rows(conn, table, key, fields, run_id)
+        last_seen = last_seen_rows(conn, table, key, fields, curr.keys() - prev.keys(), run_id)
+        events = diff_runs(prev, curr, last_seen, fields)
     detected_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     # The detected_runs row and the events commit together, so a run is never
-    # half-processed, and its primary key refuses a second pass over the run.
+    # half-processed. If another process (a manual run during the scheduled
+    # one) got here first, the row already exists and nothing is written.
     with conn:
+        before = conn.total_changes
         conn.execute(
-            "INSERT INTO detected_runs VALUES (?, ?, ?, ?)",
-            (run_id, prev_id, len(events), detected_at),
+            "INSERT OR IGNORE INTO detected_runs VALUES (?, ?, ?, ?, ?)",
+            (run_id, prev_id, status, len(events), detected_at),
         )
+        if conn.total_changes == before:
+            return "already compared", prev_id, []
         conn.executemany(
             f"INSERT INTO {events_table} VALUES (?, ?, ?, ?, ?, ?)",
             [(run_id,) + event for event in events],
         )
-    return prev_id, events
+    return status, prev_id, events
 
 
 def summarize(events):
@@ -168,27 +237,46 @@ def summarize(events):
 
 
 def detect_changes(conn, log):
-    """Compare every new Sentry and Scout run. Returns the number of sources that failed."""
+    """Compare every new Sentry and Scout run. Returns the number of problems (0 = all fine)."""
     conn.executescript(SCHEMA)
-    failures = 0
-    for source in DETECTORS:
+    problems = 0
+    for source, (table, _, _, _) in DETECTORS.items():
         try:
             for run_id in pending_runs(conn, source):
-                prev_id, events = detect_run(conn, source, run_id)
-                if prev_id is None:
+                status, prev_id, events = detect_run(conn, source, run_id)
+                if status == "skipped":
+                    # Counted as a problem so the exit code tells the scheduler
+                    stored, reported = row_counts(conn, table, run_id)
+                    problems += 1
+                    log(f"{source} events: WARNING run {run_id} skipped, "
+                        f"{stored} rows stored but the feed reported {reported}")
+                elif status == "baseline":
                     log(f"{source} events: run {run_id} is the baseline")
-                else:
+                elif status == "compared":
                     log(f"{source} events: run {run_id} vs run {prev_id}: {summarize(events)}")
+                else:
+                    log(f"{source} events: run {run_id} {status} by another process")
         except Exception as exc:  # keep going so a Sentry problem doesn't block Scout
-            failures += 1
+            problems += 1
             log(f"{source} events: FAILED - {exc}")
-    return failures
+    return problems
+
+
+def clear_events(conn):
+    """Forget every event and compared run. They are derived, so nothing is lost."""
+    conn.executescript(SCHEMA)
+    with conn:
+        for _, _, events_table, _ in DETECTORS.values():
+            conn.execute(f"DELETE FROM {events_table}")
+        conn.execute("DELETE FROM detected_runs")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--db", default="neo_risk.db")
     parser.add_argument("--log", help="also append output to this file (for scheduled runs)")
+    parser.add_argument("--rebuild", action="store_true",
+                        help="clear all events and recompute them from the snapshot tables")
     args = parser.parse_args()
 
     def log(message):
@@ -198,12 +286,19 @@ def main():
             with open(args.log, "a", encoding="utf-8") as f:
                 f.write(message + "\n")
 
-    conn = sqlite3.connect(args.db)
     started = datetime.now(timezone.utc).isoformat(timespec="seconds")
     log(f"===== change detection at {started} UTC =====")
-    failures = detect_changes(conn, log)
-    conn.close()
-    sys.exit(1 if failures else 0)
+    try:
+        conn = sqlite3.connect(args.db)
+        if args.rebuild:
+            clear_events(conn)
+            log("rebuild: cleared all events, recomputing every run")
+        problems = detect_changes(conn, log)
+        conn.close()
+    except Exception as exc:  # so the error reaches the log file under pythonw
+        problems = 1
+        log(f"change detection: FAILED - {exc}")
+    sys.exit(1 if problems else 0)
 
 
 if __name__ == "__main__":

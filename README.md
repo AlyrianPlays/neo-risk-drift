@@ -34,6 +34,11 @@ JPL API ──► snapshot.py ──► runs            (raw JSON, exactly as re
                         └─► sentry_snapshot  (parsed, typed rows per run)
                             scout_snapshot
                             sentry_removed   (new removals only)
+                              │
+            detect_changes.py ◄┘  (called at the end of every snapshot.py run)
+                        └─► sentry_events    (what changed since the previous run)
+                            scout_events
+                            detected_runs    (which runs have been compared)
 ```
 
 - **Two storage layers.** Raw responses are kept alongside parsed rows. Past API
@@ -42,7 +47,19 @@ JPL API ──► snapshot.py ──► runs            (raw JSON, exactly as re
 - **Atomic writes.** Each feed's raw and parsed data are saved in a single transaction,
   so a failed run never leaves partial data.
 - **Fault isolation.** One failing feed doesn't stop the others; the script exits
-  nonzero so the scheduler records the failure.
+  nonzero so the scheduler records the failure. Change detection runs only after every
+  feed has been saved, so a problem there is logged as `FAILED` but can never lose a
+  snapshot.
+- **Change data capture.** Each Sentry and Scout run is compared with the previous run
+  of the same source (not "yesterday": manual runs can add several a day). Every run is
+  compared exactly once, so re-running is always safe. A run that stored fewer rows than
+  JPL reported (an empty or cut-off response) is skipped with a warning instead of being
+  read as thousands of objects disappearing. Events are derived data and can be
+  recomputed at any time with `detect_changes.py --rebuild`.
+- **Calendar effects are kept apart from new data.** JPL recomputes Palermo ratings
+  against the current date even when nothing new was observed, so they creep upward as
+  impact dates approach. A change that touches only the Palermo values is logged as
+  `rescored`, so `updated` always means JPL actually refit the orbit.
 
 ## Setup
 
@@ -55,7 +72,10 @@ pip install -r requirements.txt
 python snapshot.py
 ```
 
-This creates `neo_risk.db` and prints how many rows each feed stored.
+This creates `neo_risk.db`, prints how many rows each feed stored, then prints a
+one-line summary of what changed per source (e.g. `run 31 vs run 28: 1 added,
+3 updated, 17 rescored, 3 dropped`). The first run with change detection on an
+existing database also compares all of its earlier runs.
 
 Options:
 
@@ -63,6 +83,19 @@ Options:
 python snapshot.py --db other.db       # use a different database file
 python snapshot.py --log snapshot.log  # also append output to a log file
 python snapshot.py --from-dir DIR      # load saved JSON files instead of calling JPL
+```
+
+Change detection can also be run on its own:
+
+```
+python detect_changes.py --db other.db   # compare any runs not compared yet
+python detect_changes.py --rebuild       # recompute every event (back up the database first)
+```
+
+Tests use saved responses and a throwaway database, never the real one:
+
+```
+python -m unittest discover tests -v
 ```
 
 ## Run it daily
@@ -90,9 +123,9 @@ For a manual run with visible output, use `.venv\Scripts\python.exe snapshot.py`
 | `sentry_snapshot` | Impact probability, Palermo and Torino ratings, size, velocity per object per run |
 | `scout_snapshot` | Observation count, arc length, NEO/PHA likelihood scores per object per run |
 | `sentry_removed` | Every removal seen, with the run where it was first observed |
-| `sentry_events` | What changed for each Sentry object since the previous run: `added`, `updated` (one row per changed field, with old and new value), `rescored` (only the Palermo values moved), `dropped`, `reappeared` |
+| `sentry_events` | What changed for each Sentry object since the previous run: `added`, `updated` (one row per changed field, with old and new value), `rescored` (only the Palermo values moved), `dropped`, `reappeared` (with field rows against how the object looked when last seen), `renamed` (the object was numbered, so its designation changed) |
 | `scout_events` | The same for Scout objects, comparing only rating, NEO/PHA scores, MOID and H (observation counts change on every re-observation and stay in `scout_snapshot`) |
-| `detected_runs` | Each Sentry/Scout run already compared, the run it was compared with, and how many events it produced (makes re-runs safe) |
+| `detected_runs` | Each Sentry/Scout run already compared, the run it was compared with, its status (`baseline`, `compared`, or `skipped` when rows were missing) and how many events it produced (makes re-runs safe) |
 
 ## Roadmap
 

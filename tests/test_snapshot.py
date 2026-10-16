@@ -104,6 +104,11 @@ class SnapshotTest(unittest.TestCase):
         seen = self.query("SELECT first_seen_run FROM sentry_removed WHERE des = '2026 TS'")
         self.assertEqual(seen, [(first_day2_run,)])
 
+    def test_removed_logs_only_new_rows(self):
+        self.run_day("day1")
+        self.assertIn("sentry_removed: run 5, 2 rows stored", self.run_day("day2").stdout)
+        self.assertIn("sentry_removed: run 8, 0 rows stored", self.run_day("day2").stdout)
+
     def test_one_bad_feed_does_not_sink_the_others(self):
         result = self.run_snapshot(self.broken_copy("day1", "scout_summary", "{not json"))
         self.assertEqual(result.returncode, 1)
@@ -128,7 +133,28 @@ class SnapshotTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         with open(log_path, encoding="utf-8") as f:
             text = f.read()
-        self.assertEqual(text.count("sentry_summary"), 2)
+        self.assertEqual(text.count("sentry_summary: run"), 2)
+
+    def test_change_detection_runs_after_the_feeds(self):
+        self.run_day("day1")
+        result = self.run_day("day2")
+        self.assertIn("sentry_summary events: run 4 vs run 1", result.stdout)
+        self.assertEqual(self.query("SELECT COUNT(*) FROM detected_runs")[0][0], 4)
+        self.assertGreater(self.query("SELECT COUNT(*) FROM sentry_events")[0][0], 0)
+
+    def test_broken_detector_cannot_cost_a_snapshot(self):
+        # A copy of snapshot.py beside a detect_changes.py that won't even import
+        project = os.path.join(self.tmp, "project")
+        os.mkdir(project)
+        shutil.copy(SNAPSHOT, project)
+        with open(os.path.join(project, "detect_changes.py"), "w", encoding="ascii") as f:
+            f.write("this is not python\n")
+        cmd = [sys.executable, os.path.join(project, "snapshot.py"),
+               "--db", self.db, "--from-dir", os.path.join(FIXTURES, "day1")]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("change detection: FAILED", result.stdout)
+        self.assertEqual(sorted(r[0] for r in self.query("SELECT source FROM runs")), sorted(SOURCES))
 
 
 if __name__ == "__main__":

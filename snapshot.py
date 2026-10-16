@@ -14,6 +14,11 @@ Two layers are stored on purpose:
      from ("silver" layer). Comparing rows across runs is how we'll
      later see how each object's risk changed.
 
+After the feeds are stored, detect_changes.py compares every Sentry and Scout
+run it hasn't seen yet with the previous one and records what moved as events.
+Run against an existing database for the first time, it works through all of
+the earlier runs too.
+
 Usage:
   python snapshot.py                 # pull live data from JPL
   python snapshot.py --db my.db      # use a different database file
@@ -219,6 +224,18 @@ def main():
         except Exception as exc:  # keep going so one bad feed doesn't sink the others
             failures += 1
             log(f"{source}: FAILED - {exc}")
+
+    # Change detection reads the snapshot tables and writes only its own
+    # tables, in its own transactions, after every feed above has committed,
+    # so a bug there can never cost a snapshot. It's imported here rather than
+    # at the top so that even a detect_changes.py that won't import can't stop
+    # the feeds from landing.
+    try:
+        import detect_changes
+        failures += detect_changes.detect_changes(conn, log)
+    except Exception as exc:
+        failures += 1
+        log(f"change detection: FAILED - {exc}")
 
     conn.close()
     sys.exit(1 if failures else 0)
