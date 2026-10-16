@@ -178,6 +178,12 @@ Things the first days of snapshots showed, and how the pipeline handles them:
   those dates aren't when objects left the public list. `sentry_removal_outcomes.reprocessed_2021`
   flags that window: leave it out of removal-rate and timing analyses, or model it
   separately.
+- **Details can't be backfilled once an object is removed.** For a removed object, the
+  details request only returns `{"error": "specified object removed", "removed": ...}`
+  (checked for 2026 TS and 2026 TL77 on 2026-10-16), so the observation arc and counts of
+  the 3,500+ objects removed before this project started are gone for good. Our own
+  `sentry_details` rows are the only record. That's why the daily job fetches details
+  for new and recently refit objects first: they're the likeliest to be removed soon.
 - **Scout raw records always differ between pulls**, because sky position and
   ephemeris time are computed at fetch time. Changes are detected on parsed fields only.
 
