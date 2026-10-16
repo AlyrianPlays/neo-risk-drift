@@ -127,6 +127,13 @@ For a manual run with visible output, use `.venv\Scripts\python.exe snapshot.py`
 | `scout_events` | The same for Scout objects, comparing only rating, NEO/PHA scores, MOID and H (observation counts change on every re-observation and stay in `scout_snapshot`) |
 | `detected_runs` | Each Sentry/Scout run already compared, the run it was compared with, its status (`baseline`, `compared`, or `skipped` when rows were missing) and how many events it produced (makes re-runs safe) |
 
+Views (derived on the fly, no stored data):
+
+| View | Contents |
+|---|---|
+| `sentry_drop_check` | Every Sentry `dropped` event with the removal that explains it (`removed_at` between the last run that had the object and the first that didn't). A NULL `removed_at` means the object vanished without JPL listing a removal. |
+| `sentry_removed_status` | Every removal with `back_in_sentry_run`: the first later run in which the object was in Sentry again. JPL sometimes takes a removal back (2026 TB8 was removed on 2026-10-13 and listed again the next day), so the removed list isn't strictly cumulative upstream. Rows are never deleted; this view says which removals still stand. |
+
 ## Roadmap
 
 - [x] Daily snapshots with raw and parsed storage

@@ -111,6 +111,56 @@ class FieldListTest(unittest.TestCase):
         self.assertLessEqual(set(detect_changes.SCOUT_FIELDS), set(self.columns("scout_snapshot")))
 
 
+class RemovalCheckTest(unittest.TestCase):
+    """The T-3.6 views on a hand-built history with controlled timestamps.
+
+    Mirrors 2026 TB8: listed, removed, back a day later, removed again. X
+    vanishes with no removal on record. Y was removed in 2020 and has been
+    back in Sentry since before our first run.
+    """
+
+    RUNS = [
+        ("2026-10-13T01:00:00+00:00", ["2026 TB8", "X", "Y"]),
+        ("2026-10-13T18:00:00+00:00", ["X", "Y"]),
+        ("2026-10-14T23:00:00+00:00", ["2026 TB8", "Y"]),
+        ("2026-10-16T14:00:00+00:00", ["Y"]),
+    ]
+    REMOVED = [("2026 TB8", "2026-10-13 17:29:15"), ("2026 TB8", "2026-10-15 20:08:52"), ("Y", "2020-01-01 00:00:00")]
+
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.executescript(snapshot.SCHEMA)
+        with self.conn:
+            for fetched_at, objects in self.RUNS:
+                run_id = self.conn.execute(
+                    "INSERT INTO runs (source, fetched_at, record_count, raw_json) VALUES ('sentry_summary', ?, ?, '{}')",
+                    (fetched_at, len(objects))).lastrowid
+                self.conn.executemany("INSERT INTO sentry_snapshot (run_id, des) VALUES (?, ?)",
+                                      [(run_id, des) for des in objects])
+            self.conn.executemany("INSERT INTO sentry_removed VALUES (?, ?, 1)", self.REMOVED)
+        detect_changes.detect_changes(self.conn, lambda message: None)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_each_drop_is_matched_to_its_own_removal(self):
+        rows = self.conn.execute("SELECT run_id, des, removed_at FROM sentry_drop_check ORDER BY run_id").fetchall()
+        self.assertEqual(rows, [
+            (2, "2026 TB8", "2026-10-13 17:29:15"),
+            (3, "X", None),
+            (4, "2026 TB8", "2026-10-15 20:08:52"),
+        ])
+
+    def test_removal_status_shows_when_an_object_came_back(self):
+        rows = self.conn.execute(
+            "SELECT des, removed_at, back_in_sentry_run FROM sentry_removed_status ORDER BY des, removed_at").fetchall()
+        self.assertEqual(rows, [
+            ("2026 TB8", "2026-10-13 17:29:15", 3),
+            ("2026 TB8", "2026-10-15 20:08:52", None),
+            ("Y", "2020-01-01 00:00:00", 1),
+        ])
+
+
 class DetectChangesTest(unittest.TestCase):
 
     def setUp(self):
