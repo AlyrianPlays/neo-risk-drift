@@ -90,6 +90,7 @@ For a manual run with visible output, use `.venv\Scripts\python.exe snapshot.py`
 | `sentry_snapshot` | Impact probability, Palermo and Torino ratings, size, velocity per object per run |
 | `scout_snapshot` | Observation count, arc length, NEO/PHA likelihood scores per object per run |
 | `sentry_removed` | Every removal seen, with the run where it was first observed |
+| `sentry_events` | What changed for each Sentry object since the previous run: `added`, `updated` (one row per changed field, with old and new value), `rescored` (only the Palermo values moved), `dropped`, `reappeared` |
 
 ## Roadmap
 
